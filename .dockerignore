@@ -1,6 +1,34 @@
-.github/workflows/build-image.yml
+# Git / IDE
 .git
 .gitignore
-.dockerignore
+.github
+.idea
+
+# Python / uv
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# 本地数据（通常通过 volume 挂载，不打进镜像以减小体积）
+logs
+backup_config
+downloads
+
+# 文档与开发文件
 README.md
 LICENSE
+.dockerignore
+*.md
+!src/**/*.md
+
+# 测试
+test_*.py
+tests
+
+# 其他
+uv.lock.bak
+*.log

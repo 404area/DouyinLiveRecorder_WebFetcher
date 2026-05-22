@@ -13,7 +13,10 @@ dependencies = [
     "distro>=1.9.0",
     "tqdm>=4.67.1",
     "httpx[http2]>=0.28.1",
-    "PyExecJS>=1.5.1"
+    "PyExecJS>=1.5.1",
+    "websocket-client>=1.7.0",
+    "betterproto==2.0.0b6",
+    "mini_racer>=0.12.4",
 ]
 
 [project.urls]

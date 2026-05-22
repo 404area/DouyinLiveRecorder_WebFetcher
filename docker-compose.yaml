@@ -1,13 +1,14 @@
-version: '3.8'
-
 services:
   app:
+    # 本地构建时取消下面 build 注释，并将 image 改为 douyin-live-recorder:latest
     image: ihmily/douyin-live-recorder:latest
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     environment:
       - TERM=xterm-256color
     tty: true
     stdin_open: true
-    #build: .
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs

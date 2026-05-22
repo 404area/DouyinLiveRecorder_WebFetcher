@@ -37,13 +37,26 @@ def get_quality_index(quality) -> tuple:
     return quality_str, QUALITY_MAPPING.get(quality_str, 0)
 
 
+def _extract_douyin_web_rid(record_url: str) -> str:
+    if 'live.douyin.com/' not in record_url:
+        return ''
+    part = record_url.split('?')[0].split('live.douyin.com/')[-1].strip('/')
+    if part:
+        return part
+    return ''
+
+
 @trace_error_decorator
-async def get_douyin_stream_url(json_data: dict, video_quality: str, proxy_addr: str) -> dict:
+async def get_douyin_stream_url(
+    json_data: dict, video_quality: str, proxy_addr: str, record_url: str = ""
+) -> dict:
     anchor_name = json_data.get('anchor_name')
 
     result = {
         "anchor_name": anchor_name,
         "is_live": False,
+        "room_id": str(json_data.get('id_str') or json_data.get('id', '')),
+        "web_rid": _extract_douyin_web_rid(record_url),
     }
 
     status = json_data.get("status", 4)

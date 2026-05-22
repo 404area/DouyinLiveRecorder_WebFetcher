@@ -28,6 +28,7 @@ from typing import Any
 import configparser
 import httpx
 from src import spider, stream
+from src.douyin_danmu import start_douyin_danmu_recording, stop_douyin_danmu_recording
 from src.proxy import ProxyDetector
 from src.utils import logger
 from src import utils
@@ -216,8 +217,35 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
         logger.error(f'An unknown error occurred: {e}')
 
 
+VIDEO_EXTENSIONS_FOR_MP4 = ('.ts', '.flv', '.mkv', '.mpegts')
+
+
+def is_video_file_for_mp4(path: str) -> bool:
+    lower = path.lower()
+    return lower.endswith(VIDEO_EXTENSIONS_FOR_MP4) and not lower.endswith('.mp4')
+
+
+def get_ts_segment_files_for_convert(directory: str, segment_path_template: str) -> list[str]:
+    """根据分段录制路径模板，只匹配视频分段文件，排除弹幕 xml 等。"""
+    basename = os.path.basename(segment_path_template)
+    name_no_ext = basename.rsplit('.', maxsplit=1)[0]
+    if '%03d' in name_no_ext:
+        file_prefix = name_no_ext.replace('%03d', '')
+    else:
+        file_prefix = name_no_ext.rsplit('_', maxsplit=1)[0] + '_'
+
+    result = []
+    for path in utils.get_file_paths(directory):
+        bn = os.path.basename(path)
+        if bn.startswith(file_prefix) and is_video_file_for_mp4(path):
+            result.append(path)
+    return result
+
+
 def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> None:
     try:
+        if not is_video_file_for_mp4(converts_file_path):
+            return
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
             if converts_to_h264:
                 color_obj.print_colored("正在转码为MP4格式并重新编码为h264\n", color_obj.YELLOW)
@@ -373,8 +401,32 @@ def run_script(command: str) -> None:
         logger.error('Please add `#!/bin/bash` at the beginning of your bash script file.')
 
 
+def try_start_douyin_danmu(
+    platform: str,
+    record_name: str,
+    record_url: str,
+    port_info: dict,
+    save_file_path: str,
+) -> None:
+    if platform != '抖音直播':
+        return
+    start_douyin_danmu_recording(
+        record_douyin_danmu,
+        record_name,
+        record_url,
+        port_info,
+        save_file_path,
+        dy_cookie,
+        split_video_by_time,
+        split_time,
+        danmu_include_member,
+        danmu_include_like,
+    )
+
+
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
+    stop_douyin_danmu_recording(record_name)
     recording.discard(record_name)
     if record_url in url_comments and record_url in running_list:
         running_list.remove(record_url)
@@ -453,11 +505,8 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     if return_code == 0:
         if converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
-                file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
-                for path in file_paths:
-                    if prefix in path:
-                        threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
+                for path in get_ts_segment_files_for_convert(os.path.dirname(save_file_path), save_file_path):
+                    threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
             else:
                 threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
         print(f"\n{record_name} {stop_time} 直播录制完成\n")
@@ -487,6 +536,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     else:
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
 
+    stop_douyin_danmu_recording(record_name)
     recording.discard(record_name)
     return False
 
@@ -591,7 +641,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     proxy_addr=proxy_address,
                                     cookies=dy_cookie))
                             port_info = asyncio.run(
-                                stream.get_douyin_stream_url(json_data, record_quality, proxy_address))
+                                stream.get_douyin_stream_url(
+                                    json_data, record_quality, proxy_address, record_url
+                                ))
 
                     elif record_url.find("https://www.tiktok.com/") > -1:
                         platform = 'TikTok直播'
@@ -1289,6 +1341,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 ]
 
                                         ffmpeg_command.extend(command)
+                                        try_start_douyin_danmu(
+                                            platform, record_name, record_url, port_info, save_file_path
+                                        )
                                         comment_end = check_subprocess(
                                             record_name,
                                             record_url,
@@ -1327,9 +1382,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             start_record_time = datetime.datetime.now()
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
 
+                                            try_start_douyin_danmu(
+                                                platform, record_name, record_url, port_info, save_file_path
+                                            )
                                             download_success = direct_download_stream(
                                                 flv_url, save_file_path, record_name, record_url, platform
                                             )
+                                            stop_douyin_danmu_recording(record_name)
 
                                             if download_success:
                                                 record_finished = True
@@ -1380,7 +1439,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 "{path}".format(path=save_file_path),
                                             ]
                                         ffmpeg_command.extend(command)
-
+                                        try_start_douyin_danmu(
+                                            platform, record_name, record_url, port_info, save_file_path
+                                        )
                                         comment_end = check_subprocess(
                                             record_name,
                                             record_url,
@@ -1454,7 +1515,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 "{path}".format(path=save_file_path),
                                             ]
                                         ffmpeg_command.extend(command)
-
+                                        try_start_douyin_danmu(
+                                            platform, record_name, record_url, port_info, save_file_path
+                                        )
                                         comment_end = check_subprocess(
                                             record_name,
                                             record_url,
@@ -1502,6 +1565,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                         ffmpeg_command.extend(command)
+                                        try_start_douyin_danmu(
+                                            platform, record_name, record_url, port_info, save_file_path
+                                        )
                                         comment_end = check_subprocess(
                                             record_name,
                                             record_url,
@@ -1538,6 +1604,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                             ffmpeg_command.extend(command)
+                                            try_start_douyin_danmu(
+                                                platform, record_name, record_url, port_info, save_file_path
+                                            )
                                             comment_end = check_subprocess(
                                                 record_name,
                                                 record_url,
@@ -1547,17 +1616,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             )
                                             if comment_end:
                                                 if converts_to_mp4:
-                                                    file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                                                    prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
-                                                    for path in file_paths:
-                                                        if prefix in path:
-                                                            try:
-                                                                threading.Thread(
-                                                                    target=converts_mp4,
-                                                                    args=(path, delete_origin_file)
-                                                                ).start()
-                                                            except subprocess.CalledProcessError as e:
-                                                                logger.error(f"转码失败: {e} ")
+                                                    for path in get_ts_segment_files_for_convert(
+                                                        os.path.dirname(save_file_path), save_file_path
+                                                    ):
+                                                        threading.Thread(
+                                                            target=converts_mp4,
+                                                            args=(path, delete_origin_file),
+                                                        ).start()
                                                 return
 
                                         except subprocess.CalledProcessError as e:
@@ -1582,6 +1647,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                             ffmpeg_command.extend(command)
+                                            try_start_douyin_danmu(
+                                                platform, record_name, record_url, port_info, save_file_path
+                                            )
                                             comment_end = check_subprocess(
                                                 record_name,
                                                 record_url,
@@ -1824,6 +1892,9 @@ while True:
     converts_to_h264 = options.get(read_config_value(config, '录制设置', 'mp4格式重新编码为h264', "否"), False)
     delete_origin_file = options.get(read_config_value(config, '录制设置', '追加格式后删除原文件', "否"), False)
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
+    record_douyin_danmu = options.get(read_config_value(config, '录制设置', '是否录制抖音弹幕(是/否)', "否"), False)
+    danmu_include_member = options.get(read_config_value(config, '录制设置', '弹幕包含进场消息(是/否)', "否"), False)
+    danmu_include_like = options.get(read_config_value(config, '录制设置', '弹幕包含点赞消息(是/否)', "否"), False)
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
     enable_proxy_platform = read_config_value(
