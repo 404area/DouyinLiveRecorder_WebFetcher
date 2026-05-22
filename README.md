@@ -8,7 +8,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/ihmily/DouyinLiveRecorder)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ihmily/DouyinLiveRecorder/total)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 
-一款**简易**的可循环值守的直播录制工具，基于FFmpeg实现多平台直播源录制，支持自定义配置录制以及直播状态推送。
+一款**简易**的可循环值守的直播录制工具，基于FFmpeg实现多平台直播源录制，支持自定义配置录制、直播状态推送，以及**抖音直播弹幕**同步录制（XML/ASS，与视频同目录）。
 
 </div>
 
@@ -92,9 +92,13 @@
     ├── msg_push.py -> (send live status update message)
     ├── ffmpeg.exe -> (record video)
     ├── index.html -> (play m3u8 and flv video)
-    ├── requirements.txt -> (library dependencies)
+    ├── pyproject.toml -> (project metadata & dependencies, managed by uv)
+    ├── uv.lock -> (locked dependency versions)
+    ├── requirements.txt -> (pip-compatible dependency list)
+    ├── scripts/docker-build.sh -> (Docker build helper: native / multi-arch)
     ├── docker-compose.yaml -> (Container Orchestration File)
-    ├── Dockerfile -> (Application Build Recipe)
+    ├── Dockerfile -> (uv-based multi-stage image build)
+    ├── /src/douyin_danmu -> (Douyin live danmu recorder)
     ├── StopRecording.vbs -> (stop recording script on Windows)
     ...
 ```
@@ -105,7 +109,7 @@
 
 - 对于只想使用录制软件的小白用户，进入[Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) 中下载最新发布的 zip压缩包即可，里面有打包好的录制软件。（有些电脑可能会报毒，直接忽略即可，如果下载时被浏览器屏蔽，请更换浏览器下载）
 
-- 压缩包解压后，在 `config` 文件夹内的 `URL_config.ini` 中添加录制直播间地址，一行一个直播间地址。如果要自定义配置录制，可以修改`config.ini` 文件，推荐将录制格式修改为`ts`。
+- 压缩包解压后，在 `config` 文件夹内的 `URL_config.ini` 中添加录制直播间地址，一行一个直播间地址。如果要自定义配置录制，可以修改`config.ini` 文件，推荐将录制格式修改为`ts`。录制抖音时可在 `config.ini` 的 `[录制设置]` 中开启 `是否录制抖音弹幕`，弹幕文件与视频保存在同一目录。
 - 以上步骤都做好后，就可以运行`DouyinLiveRecorder.exe` 程序进行录制了。录制的视频文件保存在同目录下的 `downloads` 文件夹内。
 
 - 另外，如果需要录制TikTok、AfreecaTV等海外平台，请在配置文件中设置开启代理并添加proxy_addr链接 如：`127.0.0.1:7890` （这只是示例地址，具体根据实际填写）。
@@ -312,9 +316,10 @@ cd DouyinLiveRecorder
 >    # 在 Windows 上安装 uv
 >    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 >    ```
-> - 如果安装依赖速度太慢, 你可以考虑使用国内 pip 镜像源:<br />
+> - 项目依赖以 **`pyproject.toml`** 与 **`uv.lock`** 为准（推荐 `uv sync`）；`requirements.txt` 供 pip 用户兼容使用。<br />
+> - 如果安装依赖速度太慢, 可以使用国内镜像源:<br />
 > 在 `pip` 命令使用 `-i` 参数指定, 如 `pip3 install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`<br />
-> 或者在 `uv` 命令 `--index` 选项指定, 如 `uv sync --index https://pypi.tuna.tsinghua.edu.cn/simple`
+> 在 `uv` 命令使用 `--index` 指定, 如 `uv sync --index https://pypi.tuna.tsinghua.edu.cn/simple`
 
 <details>
 
@@ -338,9 +343,9 @@ cd DouyinLiveRecorder
     
     2. 在终端激活虚拟环境 (在未安装 uv 或你想要手动激活虚拟环境时执行, 若已安装 uv, 可以跳过这一步, uv 会自动激活并使用虚拟环境)
    
-       **Bash** 中
+       **Bash / macOS / Linux** 中
        ```bash
-       source .venv/Scripts/activate
+       source .venv/bin/activate
        ```
 
        **Powershell** 中
@@ -432,52 +437,74 @@ uv run main.py
 &emsp;
 ## 🐋容器运行
 
-在运行命令之前，请确保您的机器上安装了 [Docker](https://docs.docker.com/get-docker/) 和 [Docker Compose](https://docs.docker.com/compose/install/) 
+在运行命令之前，请确保已安装 [Docker](https://docs.docker.com/get-docker/) 与 [Docker Compose](https://docs.docker.com/compose/install/)。镜像使用 [**uv**](https://github.com/astral-sh/uv) 多阶段构建（`pyproject.toml` + `uv.lock`），内置 Python、Node.js、FFmpeg。
 
-1.快速启动
+### 1. 快速启动（官方镜像）
 
-最简单方法是运行项目中的 [docker-compose.yaml](https://github.com/ihmily/DouyinLiveRecorder/blob/main/docker-compose.yaml) 文件，只需简单执行以下命令：
+使用 [docker-compose.yaml](docker-compose.yaml) 拉取 Docker Hub 预构建镜像：
 
 ```bash
-docker-compose up
+docker compose up
 ```
 
-可选 `-d` 在后台运行。
+可选 `-d` 在后台运行。`config`、`logs`、`downloads` 等目录通过 volume 挂载，修改配置后重启容器即可生效。
 
+### 2. 本地构建镜像
 
+仓库代码可能比 Hub 镜像更新。推荐使用项目脚本 **`scripts/docker-build.sh`**（自动识别本机 CPU 架构）：
 
-2.构建镜像(可选)
+```bash
+# 默认：仅构建本机架构（Apple Silicon → arm64，x86 → amd64）
+./scripts/docker-build.sh
 
-如果你只想简单的运行程序，则不需要做这一步。Docker镜像仓库中代码版本可能不是最新的，如果要运行本仓库主分支最新代码，可以本地自定义构建，通过修改 [docker-compose.yaml](https://github.com/ihmily/DouyinLiveRecorder/blob/main/docker-compose.yaml) 文件，如将镜像名修改为 `douyin-live-recorder:latest`，并取消 `# build: .` 注释，然后再执行
+# 本地构建全部常见架构（分标签，避免 manifest 无法加载）
+./scripts/docker-build.sh -a
+# 生成 douyin-live-recorder:latest-amd64、douyin-live-recorder:latest-arm64
+
+# 多架构推送到仓库（需 docker login）
+./scripts/docker-build.sh -a -p -n youruser/douyin-live-recorder
+
+# 仅推送本机架构
+./scripts/docker-build.sh -p -n youruser/douyin-live-recorder
+```
+
+查看全部参数：`./scripts/docker-build.sh -h`
+
+也可直接使用 Docker 构建（本机架构）：
 
 ```bash
 docker build -t douyin-live-recorder:latest .
-docker-compose up
 ```
 
-或者直接使用下面命令进行构建并启动
+使用 compose 启动本地镜像时，编辑 `docker-compose.yaml`：将 `image` 改为 `douyin-live-recorder:latest`，并取消 `build` 注释，然后执行：
 
 ```bash
-docker-compose -f docker-compose.yaml up
+docker compose up --build
 ```
 
+### 3. 多架构说明
 
+| 场景 | 命令 |
+|------|------|
+| 本机运行 | `./scripts/docker-build.sh` 或 `docker build` |
+| 本地同时拥有 amd64 / arm64 镜像 | `./scripts/docker-build.sh -a` |
+| 发布到仓库（单一 manifest，自动选架构拉取） | `./scripts/docker-build.sh -a -p -n user/repo` |
 
-3.停止容器实例
+CI 推送（`.github/workflows/build-image.yml`）默认构建 `linux/amd64` 与 `linux/arm64`。
+
+### 4. 停止容器
 
 ```bash
-docker-compose stop
+docker compose stop
 ```
 
+### 5. 注意事项
 
+① 在容器内运行前，请先在 `config/URL_config.ini` 中添加直播间地址（或通过 volume 挂载的配置目录）。
 
-4.注意事项
+② 手动中断容器会导致正在录制的视频损坏。
 
-①在docker容器内运行本程序之前，请先在配置文件中添加要录制的直播间地址。
-
-②在容器内时，如果手动中断容器运行停止录制，会导致正在录制的视频文件损坏！
-
-**无论哪种运行方式，为避免手动中断或者异常中断导致录制的视频文件损坏的情况，推荐使用 `ts` 格式保存**。
+**无论哪种运行方式，为避免异常中断导致文件损坏，推荐使用 `ts` 格式保存。**
 
 &emsp;
 
@@ -514,6 +541,11 @@ docker-compose stop
 &emsp;
 
 ## ⏳提交日志
+
+- 20260521
+  - 新增抖音直播弹幕录制（XML，录制结束可转 ASS）
+  - Docker 镜像改为 uv 多阶段构建，支持本机自适应与多架构构建脚本 `scripts/docker-build.sh`
+  - 依赖管理以 `pyproject.toml` / `uv.lock` 为主
 
 - 20251024
   - 修复抖音风控无法获取数据问题
