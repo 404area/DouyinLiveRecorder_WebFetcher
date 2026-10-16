@@ -24,3 +24,37 @@ dependencies = [
 "Documentation" = "https://github.com/ihmily/DouyinLiveRecorder"
 "Repository" = "https://github.com/ihmily/DouyinLiveRecorder"
 "Issues" = "https://github.com/ihmily/DouyinLiveRecorder/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+# test_danmu_debug.py and test_danmu_live.py dial live rooms at import time.
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-q", "--tb=short"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Pin the rule set. Ruff 0.17 runs its full catalog when `select` is unset
+# (393 findings here, mostly style). CI uses pycodestyle + pyflakes so new
+# undefined names and unused imports fail the build.
+select = ["E", "F"]
+# 769 pre-existing E501 hits at the default width (URLs, comments, generated
+# protobuf). 24 remain even at 120 columns, so line length is not gated.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing findings left in place so CI stays green without behavior edits.
+"main.py" = ["F841"]
+"src/douyin_danmu/fetcher.py" = ["F401"]
+"src/douyin_danmu/ac_signature.py" = ["E741"]
+"test_danmu_debug.py" = ["E402"]
+"test_danmu_live.py" = ["E402", "F401"]
