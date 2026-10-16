@@ -44,17 +44,6 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 # Pin the rule set. Ruff 0.17 runs its full catalog when `select` is unset
-# (393 findings here, mostly style). CI uses pycodestyle + pyflakes so new
-# undefined names and unused imports fail the build.
-select = ["E", "F"]
-# 769 pre-existing E501 hits at the default width (URLs, comments, generated
-# protobuf). 24 remain even at 120 columns, so line length is not gated.
-ignore = ["E501"]
-
-[tool.ruff.lint.per-file-ignores]
-# Pre-existing findings left in place so CI stays green without behavior edits.
-"main.py" = ["F841"]
-"src/douyin_danmu/fetcher.py" = ["F401"]
-"src/douyin_danmu/ac_signature.py" = ["E741"]
-"test_danmu_debug.py" = ["E402"]
-"test_danmu_live.py" = ["E402", "F401"]
+# (hundreds of findings here, mostly style). CI checks the complete
+# douyin_danmu package and its tests with pycodestyle, pyflakes, and imports.
+select = ["E", "F", "I"]

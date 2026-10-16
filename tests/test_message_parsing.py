@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from unittest.mock import Mock
 
 import websocket
-
 from src.douyin_danmu.fetcher import DouyinDanmuRecorder
 from src.douyin_danmu.protobuf.douyin import (
     ChatMessage,
@@ -235,11 +234,9 @@ def test_need_ack_sends_binary_frame():
     assert ack.payload == b"ie"
 
 
-def test_parsed_chat_is_written_to_xml(tmp_path, monkeypatch):
-    from tests.conftest import FakeClock
-
-    clock = FakeClock(1_700_000_000.0)
-    monkeypatch.setattr("src.douyin_danmu.xml_writer.time.time", clock.time)
+def test_parsed_chat_is_written_to_xml(tmp_path, monkeypatch, fake_clock):
+    fake_clock.now = 1_700_000_000.0
+    monkeypatch.setattr("src.douyin_danmu.xml_writer.time.time", fake_clock.time)
     path = tmp_path / "live.xml"
     recorder = DouyinDanmuRecorder(
         room_id="1",
@@ -247,7 +244,7 @@ def test_parsed_chat_is_written_to_xml(tmp_path, monkeypatch):
         cookie="ttwid=local",
     )
     try:
-        clock.advance(0.5)
+        fake_clock.advance(0.5)
         uid = 123456789012
         chat = ChatMessage(user=user(uid, "甲"), content="a<b>&c").SerializeToString()
         recorder._ws_on_message(

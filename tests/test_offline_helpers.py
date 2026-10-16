@@ -1,8 +1,11 @@
 """Cookie, path, page, and signature helpers. No network."""
 
+import socket
 import string
 from unittest.mock import Mock
 
+import pytest
+import requests
 from src.douyin_danmu.ac_signature import get__ac_signature
 from src.douyin_danmu.fetcher import (
     DouyinDanmuRecorder,
@@ -16,6 +19,15 @@ from src.douyin_danmu.manager import (
     stop_douyin_danmu_recording,
 )
 from src.douyin_danmu.signature import generate_signature
+
+
+def test_network_guard_blocks_direct_and_http_connections():
+    with socket.socket() as client:
+        with pytest.raises(RuntimeError, match="network is disabled"):
+            client.connect(("127.0.0.1", 9))
+
+    with pytest.raises(RuntimeError, match="network is disabled"):
+        requests.get("https://example.com", timeout=0.01)
 
 
 def test_parse_ttwid_from_cookie():

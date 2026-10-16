@@ -24,10 +24,9 @@ def test_color_and_time_helpers():
     assert _seconds_to_ass_time(-3) == "0:00:00.00"
     assert _seconds_to_ass_time(3661.25) == "1:01:01.25"
     assert _seconds_to_ass_time(1.995) == "0:00:02.00"
-    # Centiseconds carry into the seconds field only. Minutes are not adjusted,
-    # so a rounded-up 60th second stays as 60.
-    assert _seconds_to_ass_time(59.999) == "0:00:60.00"
-    assert _seconds_to_ass_time(119.995) == "0:01:60.00"
+    assert _seconds_to_ass_time(59.999) == "0:01:00.00"
+    assert _seconds_to_ass_time(119.995) == "0:02:00.00"
+    assert _seconds_to_ass_time(3599.999) == "1:00:00.00"
 
 
 def test_parse_p_attr_defaults_and_dialogue_modes():

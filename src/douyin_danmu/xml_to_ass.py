@@ -6,7 +6,8 @@ from pathlib import Path
 
 from loguru import logger
 
-ASS_HEADER = """[Script Info]
+ASS_HEADER = (
+    """[Script Info]
 Title: DouyinLiveRecorder Danmaku
 ScriptType: v4.00+
 WrapStyle: 0
@@ -16,12 +17,17 @@ PlayResX: 1920
 PlayResY: 1080
 
 [V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Microsoft YaHei,36,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,20,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+    "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+    "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+    "MarginL, MarginR, MarginV, Encoding\n"
+    "Style: Default,Microsoft YaHei,36,&H00FFFFFF,&H000000FF,&H00000000,"
+    "&H64000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,20,1\n\n"
+    "[Events]\n"
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+    "Effect, Text\n"
+)
 
 SCROLL_DURATION = 4.0
 STATIC_DURATION = 3.0
@@ -37,15 +43,10 @@ def _decimal_to_ass_color(color: int) -> str:
 
 
 def _seconds_to_ass_time(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    centisecs = int(round((secs % 1) * 100))
-    secs_int = int(secs)
-    if centisecs >= 100:
-        centisecs = 0
-        secs_int += 1
+    total_centisecs = max(0, round(seconds * 100))
+    total_seconds, centisecs = divmod(total_centisecs, 100)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs_int = divmod(remainder, 60)
     return f"{hours}:{minutes:02d}:{secs_int:02d}.{centisecs:02d}"
 
 

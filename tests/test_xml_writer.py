@@ -3,17 +3,16 @@
 import xml.etree.ElementTree as ET
 
 from src.douyin_danmu.xml_writer import XmlDanmuWriter
-from tests.conftest import FakeClock
 
 
-def _patch_clock(monkeypatch, start: float) -> FakeClock:
-    clock = FakeClock(start)
-    monkeypatch.setattr("src.douyin_danmu.xml_writer.time.time", clock.time)
-    return clock
+def _patch_clock(monkeypatch, fake_clock, start: float):
+    fake_clock.now = start
+    monkeypatch.setattr("src.douyin_danmu.xml_writer.time.time", fake_clock.time)
+    return fake_clock
 
 
-def test_new_file_writes_header_escaped_text_and_footer(tmp_path, monkeypatch):
-    clock = _patch_clock(monkeypatch, 1_700_000_000.0)
+def test_new_file_writes_header_escaped_text_and_footer(tmp_path, monkeypatch, fake_clock):
+    clock = _patch_clock(monkeypatch, fake_clock, 1_700_000_000.0)
     path = tmp_path / "nested" / "danmu.xml"
     writer = XmlDanmuWriter(str(path))
     clock.advance(1.25)
@@ -33,8 +32,8 @@ def test_new_file_writes_header_escaped_text_and_footer(tmp_path, monkeypatch):
     assert path.with_suffix(".ass").is_file()
 
 
-def test_existing_file_is_appended_without_a_second_header(tmp_path, monkeypatch):
-    _patch_clock(monkeypatch, 1_700_000_000.0)
+def test_existing_file_is_appended_without_a_second_header(tmp_path, monkeypatch, fake_clock):
+    _patch_clock(monkeypatch, fake_clock, 1_700_000_000.0)
     path = tmp_path / "danmu.xml"
     path.write_text("<i>\n", encoding="utf-8")
     writer = XmlDanmuWriter(str(path))
@@ -47,8 +46,8 @@ def test_existing_file_is_appended_without_a_second_header(tmp_path, monkeypatch
     assert text.endswith("</i>\n")
 
 
-def test_relative_time_and_segment_rotation(tmp_path, monkeypatch):
-    clock = _patch_clock(monkeypatch, 1_000.0)
+def test_relative_time_and_segment_rotation(tmp_path, monkeypatch, fake_clock):
+    clock = _patch_clock(monkeypatch, fake_clock, 1_000.0)
     template = str(tmp_path / "danmu_%03d.xml")
     writer = XmlDanmuWriter(template, segment_seconds=10)
     writer.write("first")
@@ -73,8 +72,8 @@ def test_relative_time_and_segment_rotation(tmp_path, monkeypatch):
     assert (tmp_path / "danmu_001.ass").is_file()
 
 
-def test_without_segment_seconds_time_jump_stays_in_one_file(tmp_path, monkeypatch):
-    clock = _patch_clock(monkeypatch, 1_000.0)
+def test_without_segment_seconds_time_jump_stays_in_one_file(tmp_path, monkeypatch, fake_clock):
+    clock = _patch_clock(monkeypatch, fake_clock, 1_000.0)
     path = tmp_path / "danmu.xml"
     writer = XmlDanmuWriter(str(path), segment_seconds=None)
     writer.write("early")
@@ -86,8 +85,8 @@ def test_without_segment_seconds_time_jump_stays_in_one_file(tmp_path, monkeypat
     assert list(tmp_path.glob("*.xml")) == [path]
 
 
-def test_empty_recording_has_no_ass(tmp_path, monkeypatch):
-    _patch_clock(monkeypatch, 1_000.0)
+def test_empty_recording_has_no_ass(tmp_path, monkeypatch, fake_clock):
+    _patch_clock(monkeypatch, fake_clock, 1_000.0)
     path = tmp_path / "empty.xml"
     writer = XmlDanmuWriter(str(path))
     writer.close()

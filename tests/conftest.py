@@ -3,6 +3,7 @@
 import socket
 
 import pytest
+import requests
 from loguru import logger
 
 logger.remove()
@@ -27,6 +28,7 @@ def block_network(monkeypatch):
     monkeypatch.setattr(socket, "socket", _NoNetworkSocket)
     monkeypatch.setattr(socket, "create_connection", _blocked)
     monkeypatch.setattr(socket, "getaddrinfo", _blocked)
+    monkeypatch.setattr(requests.sessions.Session, "request", _blocked)
 
 
 class FakeClock:
@@ -38,3 +40,8 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+@pytest.fixture
+def fake_clock():
+    return FakeClock(0)

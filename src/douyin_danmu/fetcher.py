@@ -9,8 +9,8 @@ from pathlib import Path
 
 import requests
 import websocket
-
 from loguru import logger
+
 from src.douyin_danmu.protobuf.douyin import (
     ChatMessage,
     ControlMessage,
@@ -21,11 +21,6 @@ from src.douyin_danmu.protobuf.douyin import (
     MemberMessage,
     PushFrame,
     Response,
-    RoomMessage,
-    RoomRankMessage,
-    RoomStatsMessage,
-    RoomStreamAdaptationMessage,
-    RoomUserSeqMessage,
     SocialMessage,
 )
 from src.douyin_danmu.signature import generate_signature

@@ -2,6 +2,7 @@
 # coding:utf-8
 import time
 
+
 def get__ac_signature(one_site: str, one_nonce: str, ua_n: str,one_time_stamp: int=int(time.time())) -> str:
     """计算x音的 _ac_signature 参数
 
@@ -88,11 +89,11 @@ def get__ac_signature(one_site: str, one_nonce: str, ua_n: str,one_time_stamp: i
     # 步骤5: 计算 j, k, l, m
     j = ((cal_one_str(ua_n, c) % 65521) << 16) | (cal_one_str(one_nonce, c) % 65521)
     k = enc_num_to_str(j >> 2)
-    l = enc_num_to_str((j << 28) | ((524576 ^ b) >> 4))
+    encoded_l = enc_num_to_str((j << 28) | ((524576 ^ b) >> 4))
     m = enc_num_to_str(a)
     
     # 步骤6: 组合各部分
-    n = sign_head + d + f + h + i + k + l + m
+    n = sign_head + d + f + h + i + k + encoded_l + m
     
     # 步骤7: 计算校验位 o
     o_hex = hex(cal_one_str_3(n, 0))[2:]  # 转换为16进制
