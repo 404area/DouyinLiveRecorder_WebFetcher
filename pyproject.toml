@@ -45,5 +45,5 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 # Pin the rule set. Ruff 0.17 runs its full catalog when `select` is unset
 # (hundreds of findings here, mostly style). CI checks the complete
-# douyin_danmu package and its tests with pycodestyle, pyflakes, and imports.
+# douyin_danmu package, tools/ and the tests with pycodestyle, pyflakes, and imports.
 select = ["E", "F", "I"]
