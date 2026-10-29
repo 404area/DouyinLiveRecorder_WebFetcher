@@ -69,8 +69,10 @@ def reset_cache() -> None:
     _priority_prefix_cache = None
 
 
-def popen_kwargs(os_name: str = os.name) -> dict[str, Any]:
-    """Windows 下让 ffmpeg 进程以低于普通优先级运行。"""
+def popen_kwargs(os_name: str = os.name, enabled: bool = True) -> dict[str, Any]:
+    """Windows 下让 ffmpeg 进程以低于普通优先级运行；enabled=False 时不设置。"""
+    if not enabled:
+        return {}
     if os_name == "nt":
         return {"creationflags": getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000)}
     return {}
@@ -97,7 +99,11 @@ def run_ffmpeg_then_delete(
 class RemuxQueue:
     """固定 worker 数的转封装队列；max_concurrency <= 0 时退化为不限流。"""
 
-    def __init__(self, max_concurrency: int, runner: Callable[[str, bool], None]) -> None:
+    def __init__(
+        self,
+        max_concurrency: int,
+        runner: Callable[[str, bool], bool | None],
+    ) -> None:
         self.max_concurrency = max_concurrency
         self.runner = runner
         self._queue: queue.Queue[tuple[str, bool]] = queue.Queue()
@@ -127,28 +133,34 @@ class RemuxQueue:
         while True:
             path, delete_origin = self._queue.get()
             try:
-                self._run_task(path, delete_origin)
+                try:
+                    self._run_task(path, delete_origin)
+                except Exception as e:
+                    logger.error(f"转封装任务异常 {os.path.basename(path)}: {e}")
             finally:
                 self._queue.task_done()
 
     def _run_task(self, path: str, delete_origin: bool) -> None:
         started_at = time.monotonic()
+        name = os.path.basename(path)
         with self._lock:
             self._running += 1
         try:
-            self.runner(path, delete_origin)
-            elapsed = time.monotonic() - started_at
-            name = os.path.basename(path)
-            size_text = ""
-            try:
-                mp4_path = path.rsplit(".", maxsplit=1)[0] + ".mp4"
-                size_gb = os.path.getsize(mp4_path) / (1024 ** 3)
-                size_text = f" {size_gb:.2f}GB"
-            except OSError:
-                pass
-            logger.info(f"转封装完成 {name}{size_text} 用时 {elapsed:.1f}s")
+            result = self.runner(path, delete_origin)
+            if result is False:
+                logger.error(f"转封装失败 {name}")
+            else:
+                elapsed = time.monotonic() - started_at
+                size_text = ""
+                try:
+                    mp4_path = path.rsplit(".", maxsplit=1)[0] + ".mp4"
+                    size_gb = os.path.getsize(mp4_path) / (1024 ** 3)
+                    size_text = f" {size_gb:.2f}GB"
+                except OSError:
+                    pass
+                logger.info(f"转封装完成 {name}{size_text} 用时 {elapsed:.1f}s")
         except Exception as e:
-            logger.error(f"转封装失败 {os.path.basename(path)}: {e}")
+            logger.error(f"转封装失败 {name}: {e}")
         finally:
             with self._lock:
                 self._running -= 1
@@ -158,8 +170,14 @@ class RemuxQueue:
     def submit(self, path: str, delete_origin: bool) -> bool:
         with self._lock:
             if path in self._pending:
-                return False
-            self._pending.add(path)
+                duplicate = True
+            else:
+                duplicate = False
+                self._pending.add(path)
+
+        if duplicate:
+            logger.info(f"转封装任务已在队列中，跳过重复提交：{os.path.basename(path)}")
+            return False
 
         if self.max_concurrency <= 0:
             threading.Thread(

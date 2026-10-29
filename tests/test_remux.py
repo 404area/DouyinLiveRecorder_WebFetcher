@@ -21,6 +21,34 @@ from src.remux import (
 TIMEOUT = 5.0
 
 
+class _RecordingLogger:
+    """Minimal loguru-compatible logger used to assert log messages in tests."""
+
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    def _record(self, level: str, message, *_args, **_kwargs) -> None:
+        self.messages.append((level, str(message)))
+
+    def debug(self, message, *args, **kwargs) -> None:
+        self._record("debug", message, *args, **kwargs)
+
+    def info(self, message, *args, **kwargs) -> None:
+        self._record("info", message, *args, **kwargs)
+
+    def warning(self, message, *args, **kwargs) -> None:
+        self._record("warning", message, *args, **kwargs)
+
+    def error(self, message, *args, **kwargs) -> None:
+        self._record("error", message, *args, **kwargs)
+
+    def exception(self, message, *args, **kwargs) -> None:
+        self._record("exception", message, *args, **kwargs)
+
+    def text(self) -> str:
+        return "\n".join(text for _level, text in self.messages)
+
+
 def _wait_for(predicate, timeout: float = TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -67,11 +95,12 @@ def test_unbounded_concurrency_when_max_is_zero():
     gate = threading.Event()
     lock = threading.Lock()
     started = []
+    gate_results = []
 
     def runner(path, _delete_origin):
         with lock:
             started.append(path)
-        assert gate.wait(TIMEOUT)
+        gate_results.append(gate.wait(TIMEOUT))
 
     remux_queue = RemuxQueue(0, runner)
     for index in range(10):
@@ -81,6 +110,8 @@ def test_unbounded_concurrency_when_max_is_zero():
     gate.set()
     assert remux_queue.join(TIMEOUT) is True
     assert len(started) == 10
+    assert len(gate_results) == 10
+    assert all(gate_results)
 
 
 def test_duplicate_path_only_runs_once():
@@ -103,6 +134,38 @@ def test_duplicate_path_only_runs_once():
     assert calls == ["/tmp/duplicate.ts"]
 
 
+def test_duplicate_submit_logs_skip(monkeypatch):
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(remux, "logger", fake_logger)
+    gate = threading.Event()
+
+    def runner(_path, _delete_origin):
+        gate.wait(TIMEOUT)
+
+    remux_queue = RemuxQueue(1, runner)
+    assert remux_queue.submit("/tmp/dup-logged.ts", False) is True
+    assert remux_queue.submit("/tmp/dup-logged.ts", False) is False
+
+    gate.set()
+    assert remux_queue.join(TIMEOUT) is True
+    assert "转封装任务已在队列中，跳过重复提交" in fake_logger.text()
+    assert "dup-logged.ts" in fake_logger.text()
+
+
+def test_runner_returning_false_logs_failure_without_completion(monkeypatch):
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(remux, "logger", fake_logger)
+
+    remux_queue = RemuxQueue(1, lambda _path, _delete_origin: False)
+    assert remux_queue.submit("/tmp/failed-remux.ts", False) is True
+    assert remux_queue.join(TIMEOUT) is True
+
+    logged = fake_logger.text()
+    assert "转封装失败" in logged
+    assert "failed-remux.ts" in logged
+    assert "转封装完成" not in logged
+
+
 def test_exception_does_not_kill_worker():
     executed = []
     lock = threading.Lock()
@@ -120,6 +183,7 @@ def test_exception_does_not_kill_worker():
 
     assert remux_queue.join(TIMEOUT) is True
     assert executed == paths
+    assert remux_queue.pending() == []
 
 
 def _which_from(mapping):
@@ -186,6 +250,14 @@ def test_detect_prefix_on_windows_and_popen_kwargs():
     assert popen_kwargs("posix") == {}
 
 
+def test_popen_kwargs_respects_enabled_switch():
+    expected_flags = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x4000)
+    assert popen_kwargs("nt", enabled=False) == {}
+    assert popen_kwargs("nt", enabled=True) == {"creationflags": expected_flags}
+    assert popen_kwargs("posix", enabled=True) == {}
+    assert popen_kwargs("posix", enabled=False) == {}
+
+
 def test_low_priority_prefix_caches_detection(monkeypatch):
     remux.reset_cache()
     calls = []
@@ -211,6 +283,30 @@ def test_failure_keeps_source_ts(tmp_path):
 
     def fake_check_output(cmd, **kwargs):
         assert kwargs["stderr"] == subprocess.STDOUT
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run_ffmpeg_then_delete(
+            ["ffmpeg", "-i", str(src)],
+            str(src),
+            True,
+            check_output=fake_check_output,
+            remove=removed.append,
+            sleep=slept.append,
+        )
+
+    assert src.exists()
+    assert removed == []
+    assert slept == []
+
+
+def test_ffmpeg_failure_never_removes_source(tmp_path):
+    src = tmp_path / "keep.ts"
+    src.write_bytes(b"fake-ts")
+    removed = []
+    slept = []
+
+    def fake_check_output(cmd, **_kwargs):
         raise subprocess.CalledProcessError(1, cmd)
 
     with pytest.raises(subprocess.CalledProcessError):
@@ -298,7 +394,7 @@ def test_real_ffmpeg_remux_with_concurrency_limit(tmp_path):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         pytest.skip("failed to generate a test ts with ffmpeg")
 
     ts_paths = []
