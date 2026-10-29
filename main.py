@@ -1667,7 +1667,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
-                                                submit_remux(save_file_path, delete_origin_file)
+                                                if converts_to_mp4:
+                                                    submit_remux(save_file_path, delete_origin_file)
                                                 return
 
                                         except subprocess.CalledProcessError as e:
