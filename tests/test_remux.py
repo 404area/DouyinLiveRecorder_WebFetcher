@@ -4,6 +4,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -56,6 +57,52 @@ def _wait_for(predicate, timeout: float = TIMEOUT) -> bool:
             return True
         time.sleep(0.005)
     return predicate()
+
+
+class _FakeProcess:
+    """Minimal subprocess.Popen stand-in driven entirely by test data."""
+
+    def __init__(self, output=b"", returncode=0):
+        self.output = output
+        self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        if isinstance(self.output, BaseException):
+            raise self.output
+        return self.output, None
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _popen_returning(process):
+    def popen(_cmd, **kwargs):
+        assert kwargs["stdout"] == subprocess.PIPE
+        assert kwargs["stderr"] == subprocess.STDOUT
+        return process
+
+    return popen
+
+
+class _WaitTimesOutProcess(_FakeProcess):
+    """communicate 与 terminate 后的 wait 都会超时，直到 kill 才退出。"""
+
+    def communicate(self, timeout=None):
+        raise subprocess.TimeoutExpired("ffmpeg", timeout)
+
+    def wait(self, timeout=None):
+        if not self.killed:
+            raise subprocess.TimeoutExpired("ffmpeg", timeout)
+        self.returncode = -9
+        return self.returncode
 
 
 def test_concurrency_limit():
@@ -280,17 +327,14 @@ def test_failure_keeps_source_ts(tmp_path):
     src.write_bytes(b"fake-ts")
     removed = []
     slept = []
-
-    def fake_check_output(cmd, **kwargs):
-        assert kwargs["stderr"] == subprocess.STDOUT
-        raise subprocess.CalledProcessError(1, cmd)
+    process = _FakeProcess(output=b"", returncode=1)
 
     with pytest.raises(subprocess.CalledProcessError):
         run_ffmpeg_then_delete(
             ["ffmpeg", "-i", str(src)],
             str(src),
             True,
-            check_output=fake_check_output,
+            popen=_popen_returning(process),
             remove=removed.append,
             sleep=slept.append,
         )
@@ -305,16 +349,14 @@ def test_ffmpeg_failure_never_removes_source(tmp_path):
     src.write_bytes(b"fake-ts")
     removed = []
     slept = []
-
-    def fake_check_output(cmd, **_kwargs):
-        raise subprocess.CalledProcessError(1, cmd)
+    process = _FakeProcess(output=b"", returncode=1)
 
     with pytest.raises(subprocess.CalledProcessError):
         run_ffmpeg_then_delete(
             ["ffmpeg", "-i", str(src)],
             str(src),
             True,
-            check_output=fake_check_output,
+            popen=_popen_returning(process),
             remove=removed.append,
             sleep=slept.append,
         )
@@ -329,24 +371,22 @@ def test_success_deletes_source_when_requested(tmp_path):
     src.write_bytes(b"fake-ts")
     removed = []
     slept = []
-
-    def fake_check_output(_cmd, **kwargs):
-        assert kwargs["stderr"] == subprocess.STDOUT
-        return b"ok"
+    process = _FakeProcess(output=b"ok", returncode=0)
 
     def fake_remove(path):
         removed.append(path)
         os.remove(path)
 
-    run_ffmpeg_then_delete(
+    result = run_ffmpeg_then_delete(
         ["ffmpeg", "-i", str(src)],
         str(src),
         True,
-        check_output=fake_check_output,
+        popen=_popen_returning(process),
         remove=fake_remove,
         sleep=slept.append,
     )
 
+    assert result == b"ok"
     assert not src.exists()
     assert removed == [str(src)]
     assert slept == [1]
@@ -356,21 +396,104 @@ def test_success_keeps_source_when_delete_disabled(tmp_path):
     src = tmp_path / "c.ts"
     src.write_bytes(b"fake-ts")
     removed = []
-
-    def fake_check_output(_cmd, **_kwargs):
-        return b"ok"
+    process = _FakeProcess(output=b"ok", returncode=0)
 
     run_ffmpeg_then_delete(
         ["ffmpeg", "-i", str(src)],
         str(src),
         False,
-        check_output=fake_check_output,
+        popen=_popen_returning(process),
         remove=removed.append,
         sleep=lambda _seconds: None,
     )
 
     assert src.exists()
     assert removed == []
+
+
+def test_timeout_terminates_process_and_keeps_source(tmp_path, monkeypatch):
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(remux, "logger", fake_logger)
+    src = tmp_path / "hang.ts"
+    src.write_bytes(b"fake-ts")
+    started = time.monotonic()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_ffmpeg_then_delete(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            str(src),
+            True,
+            timeout=0.5,
+            sleep=lambda _seconds: None,
+        )
+
+    assert time.monotonic() - started < 10
+    assert src.exists()
+    assert "转封装超时" in fake_logger.text()
+    assert "原文件保留" in fake_logger.text()
+    assert "hang.ts" in fake_logger.text()
+
+
+def test_timeout_kills_process_when_terminate_wait_times_out(tmp_path, monkeypatch):
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(remux, "logger", fake_logger)
+    src = tmp_path / "stuck.ts"
+    src.write_bytes(b"fake-ts")
+    process = _WaitTimesOutProcess()
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_ffmpeg_then_delete(
+            ["ffmpeg", "-i", str(src)],
+            str(src),
+            False,
+            timeout=1,
+            popen=_popen_returning(process),
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert src.exists()
+
+
+def test_timeout_does_not_delete_existing_partial_output(tmp_path, monkeypatch):
+    fake_logger = _RecordingLogger()
+    monkeypatch.setattr(remux, "logger", fake_logger)
+    src = tmp_path / "partial.ts"
+    src.write_bytes(b"fake-ts")
+    partial = tmp_path / "partial.mp4"
+    partial.write_bytes(b"half-done")
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_ffmpeg_then_delete(
+            [sys.executable, "-c", "import time; time.sleep(60)", str(partial)],
+            str(src),
+            True,
+            timeout=0.5,
+            sleep=lambda _seconds: None,
+        )
+
+    assert partial.exists()
+    assert src.exists()
+    assert "可能是半成品，未删除" in fake_logger.text()
+    assert str(partial) in fake_logger.text()
+
+
+def test_timeout_failure_does_not_block_queue():
+    executed = []
+
+    def runner(path, _delete_origin):
+        executed.append(path)
+        if path == "first":
+            raise subprocess.TimeoutExpired("ffmpeg", 1)
+        return True
+
+    remux_queue = RemuxQueue(1, runner)
+    assert remux_queue.submit("first", False) is True
+    assert remux_queue.submit("second", False) is True
+    assert remux_queue.join(TIMEOUT) is True
+
+    assert executed == ["first", "second"]
+    assert remux_queue.pending() == []
 
 
 def test_real_ffmpeg_remux_with_concurrency_limit(tmp_path):

@@ -78,18 +78,57 @@ def popen_kwargs(os_name: str = os.name, enabled: bool = True) -> dict[str, Any]
     return {}
 
 
+def _find_existing_output(cmd: list[str], src_path: str) -> str | None:
+    """超时后探测可能已生成的半成品路径，仅用于日志提示。"""
+    candidates: list[str] = []
+    if cmd:
+        candidates.append(cmd[-1])
+    base = os.path.splitext(src_path)[0]
+    candidates.extend(base + ext for ext in (".mp4", ".m4a", ".flv"))
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate.startswith("-") or candidate == src_path:
+            continue
+        if "%" in candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def run_ffmpeg_then_delete(
     cmd: list[str],
     src_path: str,
     delete_origin: bool,
     *,
-    check_output: Callable[..., Any] = subprocess.check_output,
+    timeout: float | None = None,
+    popen: Callable[..., Any] = subprocess.Popen,
     remove: Callable[[str], Any] = os.remove,
     sleep: Callable[[float], Any] = time.sleep,
     **kwargs: Any,
 ) -> Any:
-    """执行 ffmpeg；只有成功返回后才删除原文件，失败则原样保留。"""
-    output = check_output(cmd, stderr=subprocess.STDOUT, **kwargs)
+    """执行 ffmpeg；只有成功返回后才删除原文件，失败或超时则原样保留。"""
+    process = popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        logger.error(
+            f"转封装超时（>{timeout}s），已终止 ffmpeg，"
+            f"原文件保留：{os.path.basename(src_path)}"
+        )
+        partial_path = _find_existing_output(cmd, src_path)
+        if partial_path:
+            logger.warning(f"转封装超时，目标产物可能是半成品，未删除：{partial_path}")
+        raise
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd, output=output)
     if delete_origin and os.path.exists(src_path):
         sleep(1)
         remove(src_path)

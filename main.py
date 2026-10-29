@@ -80,8 +80,10 @@ remux_queue = None
 remux_queue_lock = threading.Lock()
 remux_max_concurrency = 2
 remux_low_priority = True
+remux_timeout = 7200
 _remux_concurrency_invalid_value = object()
 _remux_concurrency_change_notified = object()
+_remux_timeout_invalid_value = object()
 os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
@@ -218,9 +220,12 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
             ]
             run_ffmpeg_then_delete(
                 ffmpeg_command, converts_file_path, is_original_delete,
+                timeout=remux_timeout if remux_timeout > 0 else None,
                 startupinfo=get_startup_info(os_type),
                 **popen_kwargs(os_type, enabled=remux_low_priority)
             )
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
     except subprocess.CalledProcessError as e:
         logger.error(f'Error occurred during conversion: {e}')
     except Exception as e:
@@ -287,10 +292,14 @@ def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> bo
             ]
         run_ffmpeg_then_delete(
             ffmpeg_command, converts_file_path, is_original_delete,
+            timeout=remux_timeout if remux_timeout > 0 else None,
             startupinfo=get_startup_info(os_type),
             **popen_kwargs(os_type, enabled=remux_low_priority)
         )
         return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f'Error occurred during conversion: {e}')
         return False
@@ -335,10 +344,14 @@ def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> bo
         ]
         run_ffmpeg_then_delete(
             ffmpeg_command, converts_file_path, is_original_delete,
+            timeout=remux_timeout if remux_timeout > 0 else None,
             startupinfo=get_startup_info(os_type),
             **popen_kwargs(os_type, enabled=remux_low_priority)
         )
         return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f'Error occurred during conversion: {e}')
         return False
@@ -1955,6 +1968,25 @@ while True:
     remux_low_priority = options.get(
         read_config_value(config, '录制设置', '转封装使用低优先级(ionice/nice)', "是"), True
     )
+    remux_timeout_value = read_config_value(config, '录制设置', '转封装超时秒数(0为不限)', 7200)
+    try:
+        remux_timeout = int(remux_timeout_value)
+    except (ValueError, TypeError):
+        remux_timeout = 7200
+        if _remux_timeout_invalid_value != remux_timeout_value:
+            _remux_timeout_invalid_value = remux_timeout_value
+            logger.warning(
+                f"转封装超时秒数配置无效：{remux_timeout_value!r}，已回退为 7200"
+            )
+    else:
+        if remux_timeout < 0:
+            remux_timeout = 0
+            if _remux_timeout_invalid_value != remux_timeout_value:
+                _remux_timeout_invalid_value = remux_timeout_value
+                logger.warning(
+                    f"转封装超时秒数不能为负数：{remux_timeout_value!r}，"
+                    f"已按 0（不限）处理"
+                )
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
     record_douyin_danmu = options.get(read_config_value(config, '录制设置', '是否录制抖音弹幕(是/否)', "否"), False)
     danmu_include_member = options.get(read_config_value(config, '录制设置', '弹幕包含进场消息(是/否)', "否"), False)
