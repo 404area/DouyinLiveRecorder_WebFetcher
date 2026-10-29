@@ -30,6 +30,7 @@ import httpx
 from src import spider, stream
 from src.douyin_danmu import start_douyin_danmu_recording, stop_douyin_danmu_recording
 from src.proxy import ProxyDetector
+from src.remux import RemuxQueue, low_priority_prefix, popen_kwargs, run_ffmpeg_then_delete
 from src.utils import logger
 from src import utils
 from msg_push import (
@@ -75,6 +76,14 @@ rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
 os.makedirs(default_path, exist_ok=True)
 file_update_lock = threading.Lock()
+remux_queue = None
+remux_queue_lock = threading.Lock()
+remux_max_concurrency = 2
+remux_low_priority = True
+remux_timeout = 7200
+_remux_concurrency_invalid_value = object()
+_remux_concurrency_change_notified = object()
+_remux_timeout_invalid_value = object()
 os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 color_obj = utils.Color()
@@ -82,6 +91,11 @@ os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
 
 
 def signal_handler(_signal, _frame):
+    if remux_queue is not None:
+        pending = remux_queue.pending()
+        if pending:
+            names = "、".join(os.path.basename(path) for path in pending)
+            logger.info(f"转封装队列还有 {len(pending)} 个未处理，ts 已保留：{names}")
     sys.exit(0)
 
 
@@ -191,7 +205,7 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
                   is_original_delete: bool = True) -> None:
     try:
         if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            ffmpeg_command = [
+            ffmpeg_command = (low_priority_prefix() if remux_low_priority else []) + [
                 "ffmpeg",
                 "-i", converts_file_path,
                 "-c:v", "copy",
@@ -204,13 +218,14 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
                 "-movflags", "+frag_keyframe+empty_moov",
                 segment_save_file_path,
             ]
-            _output = subprocess.check_output(
-                ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
+            run_ffmpeg_then_delete(
+                ffmpeg_command, converts_file_path, is_original_delete,
+                timeout=remux_timeout if remux_timeout > 0 else None,
+                startupinfo=get_startup_info(os_type),
+                **popen_kwargs(os_type, enabled=remux_low_priority)
             )
-            if is_original_delete:
-                time.sleep(1)
-                if os.path.exists(converts_file_path):
-                    os.remove(converts_file_path)
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
     except subprocess.CalledProcessError as e:
         logger.error(f'Error occurred during conversion: {e}')
     except Exception as e:
@@ -242,60 +257,107 @@ def get_ts_segment_files_for_convert(directory: str, segment_path_template: str)
     return result
 
 
-def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> None:
+def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> bool:
     try:
         if not is_video_file_for_mp4(converts_file_path):
-            return
-        if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            if converts_to_h264:
-                color_obj.print_colored("正在转码为MP4格式并重新编码为h264\n", color_obj.YELLOW)
-                ffmpeg_command = [
-                    "ffmpeg", "-i", converts_file_path,
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "23",
-                    "-vf", "format=yuv420p",
-                    "-c:a", "copy",
-                    "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
-                ]
-            else:
-                color_obj.print_colored("正在转码为MP4格式\n", color_obj.YELLOW)
-                ffmpeg_command = [
-                    "ffmpeg", "-i", converts_file_path,
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
-                ]
-            _output = subprocess.check_output(
-                ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
-            )
-            if is_original_delete:
-                time.sleep(1)
-                if os.path.exists(converts_file_path):
-                    os.remove(converts_file_path)
-    except subprocess.CalledProcessError as e:
-        logger.error(f'Error occurred during conversion: {e}')
-    except Exception as e:
-        logger.error(f'An unknown error occurred: {e}')
+            logger.info(f'跳过转封装（不是视频文件）：{os.path.basename(converts_file_path)}')
+            return False
+        if not os.path.exists(converts_file_path):
+            logger.warning(f'跳过转封装（文件不存在）：{converts_file_path}')
+            return False
+        if os.path.getsize(converts_file_path) <= 0:
+            logger.warning(f'跳过转封装（文件大小为 0）：{converts_file_path}')
+            return False
 
-
-def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> None:
-    try:
-        if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            _output = subprocess.check_output([
+        prefix = low_priority_prefix() if remux_low_priority else []
+        file_name = os.path.basename(converts_file_path)
+        if converts_to_h264:
+            color_obj.print_colored(f"正在转码为MP4格式并重新编码为h264：{file_name}\n", color_obj.YELLOW)
+            ffmpeg_command = prefix + [
                 "ffmpeg", "-i", converts_file_path,
-                "-n", "-vn",
-                "-c:a", "aac", "-bsf:a", "aac_adtstoasc", "-ab", "320k",
-                converts_file_path.rsplit('.', maxsplit=1)[0] + ".m4a",
-            ], stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type))
-            if is_original_delete:
-                time.sleep(1)
-                if os.path.exists(converts_file_path):
-                    os.remove(converts_file_path)
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-vf", "format=yuv420p",
+                "-c:a", "copy",
+                "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
+            ]
+        else:
+            color_obj.print_colored(f"正在转码为MP4格式：{file_name}\n", color_obj.YELLOW)
+            ffmpeg_command = prefix + [
+                "ffmpeg", "-i", converts_file_path,
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
+            ]
+        run_ffmpeg_then_delete(
+            ffmpeg_command, converts_file_path, is_original_delete,
+            timeout=remux_timeout if remux_timeout > 0 else None,
+            startupinfo=get_startup_info(os_type),
+            **popen_kwargs(os_type, enabled=remux_low_priority)
+        )
+        return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
+        return False
     except subprocess.CalledProcessError as e:
         logger.error(f'Error occurred during conversion: {e}')
+        return False
     except Exception as e:
         logger.error(f'An unknown error occurred: {e}')
+        return False
+
+
+def submit_remux(path: str, delete_origin: bool) -> bool:
+    global remux_queue, _remux_concurrency_change_notified
+    if remux_queue is None:
+        with remux_queue_lock:
+            if remux_queue is None:
+                remux_queue = RemuxQueue(remux_max_concurrency, runner=converts_mp4)
+    current_concurrency = remux_queue.max_concurrency
+    if (
+        current_concurrency != remux_max_concurrency
+        and _remux_concurrency_change_notified != remux_max_concurrency
+    ):
+        _remux_concurrency_change_notified = remux_max_concurrency
+        logger.info(
+            f"转封装最大并发数已改为 {remux_max_concurrency}，"
+            f"需重启程序生效（当前 {current_concurrency}）"
+        )
+    return remux_queue.submit(path, delete_origin)
+
+
+def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> bool:
+    try:
+        if not os.path.exists(converts_file_path):
+            logger.warning(f'跳过音频转封装（文件不存在）：{converts_file_path}')
+            return False
+        if os.path.getsize(converts_file_path) <= 0:
+            logger.warning(f'跳过音频转封装（文件大小为 0）：{converts_file_path}')
+            return False
+
+        ffmpeg_command = (low_priority_prefix() if remux_low_priority else []) + [
+            "ffmpeg", "-i", converts_file_path,
+            "-n", "-vn",
+            "-c:a", "aac", "-bsf:a", "aac_adtstoasc", "-ab", "320k",
+            converts_file_path.rsplit(".", maxsplit=1)[0] + ".m4a",
+        ]
+        run_ffmpeg_then_delete(
+            ffmpeg_command, converts_file_path, is_original_delete,
+            timeout=remux_timeout if remux_timeout > 0 else None,
+            startupinfo=get_startup_info(os_type),
+            **popen_kwargs(os_type, enabled=remux_low_priority)
+        )
+        return True
+    except subprocess.TimeoutExpired as e:
+        logger.error(f'转封装超时，已终止 ffmpeg：{e}')
+        return False
+    except subprocess.CalledProcessError as e:
+        logger.error(f'Error occurred during conversion: {e}')
+        return False
+    except Exception as e:
+        logger.error(f'An unknown error occurred: {e}')
+        return False
 
 
 def generate_subtitles(record_name: str, ass_filename: str, sub_format: str = 'srt') -> None:
@@ -506,9 +568,9 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         if converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
                 for path in get_ts_segment_files_for_convert(os.path.dirname(save_file_path), save_file_path):
-                    threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
+                    submit_remux(path, delete_origin_file)
             else:
-                threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
+                submit_remux(save_file_path, delete_origin_file)
         print(f"\n{record_name} {stop_time} 直播录制完成\n")
 
         if script_command:
@@ -1468,10 +1530,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     is_original_delete=delete_origin_file
                                                 )
                                             else:
-                                                threading.Thread(
-                                                    target=converts_mp4,
-                                                    args=(save_file_path, delete_origin_file)
-                                                ).start()
+                                                submit_remux(save_file_path, delete_origin_file)
 
                                         else:
                                             seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.flv"
@@ -1619,10 +1678,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     for path in get_ts_segment_files_for_convert(
                                                         os.path.dirname(save_file_path), save_file_path
                                                     ):
-                                                        threading.Thread(
-                                                            target=converts_mp4,
-                                                            args=(path, delete_origin_file),
-                                                        ).start()
+                                                        submit_remux(path, delete_origin_file)
                                                 return
 
                                         except subprocess.CalledProcessError as e:
@@ -1658,9 +1714,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
-                                                threading.Thread(
-                                                    target=converts_mp4, args=(save_file_path, delete_origin_file)
-                                                ).start()
+                                                if converts_to_mp4:
+                                                    submit_remux(save_file_path, delete_origin_file)
                                                 return
 
                                         except subprocess.CalledProcessError as e:
@@ -1891,6 +1946,47 @@ while True:
     converts_to_mp4 = options.get(read_config_value(config, '录制设置', '录制完成后自动转为mp4格式', "否"), False)
     converts_to_h264 = options.get(read_config_value(config, '录制设置', 'mp4格式重新编码为h264', "否"), False)
     delete_origin_file = options.get(read_config_value(config, '录制设置', '追加格式后删除原文件', "否"), False)
+    remux_max_concurrency_value = read_config_value(config, '录制设置', '转封装最大并发数(0为不限)', 2)
+    try:
+        remux_max_concurrency = int(remux_max_concurrency_value)
+    except (ValueError, TypeError):
+        remux_max_concurrency = 2
+        if _remux_concurrency_invalid_value != remux_max_concurrency_value:
+            _remux_concurrency_invalid_value = remux_max_concurrency_value
+            logger.warning(
+                f"转封装最大并发数配置无效：{remux_max_concurrency_value!r}，已回退为 2"
+            )
+    else:
+        if remux_max_concurrency < 0:
+            remux_max_concurrency = 0
+            if _remux_concurrency_invalid_value != remux_max_concurrency_value:
+                _remux_concurrency_invalid_value = remux_max_concurrency_value
+                logger.warning(
+                    f"转封装最大并发数不能为负数：{remux_max_concurrency_value!r}，"
+                    f"已按 0（不限）处理"
+                )
+    remux_low_priority = options.get(
+        read_config_value(config, '录制设置', '转封装使用低优先级(ionice/nice)', "是"), True
+    )
+    remux_timeout_value = read_config_value(config, '录制设置', '转封装超时秒数(0为不限)', 7200)
+    try:
+        remux_timeout = int(remux_timeout_value)
+    except (ValueError, TypeError):
+        remux_timeout = 7200
+        if _remux_timeout_invalid_value != remux_timeout_value:
+            _remux_timeout_invalid_value = remux_timeout_value
+            logger.warning(
+                f"转封装超时秒数配置无效：{remux_timeout_value!r}，已回退为 7200"
+            )
+    else:
+        if remux_timeout < 0:
+            remux_timeout = 0
+            if _remux_timeout_invalid_value != remux_timeout_value:
+                _remux_timeout_invalid_value = remux_timeout_value
+                logger.warning(
+                    f"转封装超时秒数不能为负数：{remux_timeout_value!r}，"
+                    f"已按 0（不限）处理"
+                )
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
     record_douyin_danmu = options.get(read_config_value(config, '录制设置', '是否录制抖音弹幕(是/否)', "否"), False)
     danmu_include_member = options.get(read_config_value(config, '录制设置', '弹幕包含进场消息(是/否)', "否"), False)
